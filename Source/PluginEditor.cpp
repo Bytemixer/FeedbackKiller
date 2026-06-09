@@ -29,6 +29,7 @@ namespace
         { "release",        "Release (ms)",         K_FLOAT },
         { "hold",           "Hold (ms)",            K_FLOAT },
         { "replaceAnchorClean", "Replace Anchor Clean", K_FLOAT },
+        { "tonalGate",      "Tonal Gate (Phase)",   K_FLOAT },
         { "channelMode",    "Channel Mode",         K_CHOICE },
         { "fftSize",        "FFT Size",             K_CHOICE },
     };

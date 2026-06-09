@@ -51,6 +51,12 @@ public:
 
         int   channelMode = 0;      // 0 Auto, 1 Forced Stereo, 2 Forced Mono
         int   fftOrder = 13;        // log2(fftSize): 12..15 -> 4096..32768
+
+        // Enhancement (diverges from JSFX): phase-stability "tonal" gate.
+        // 0 = off (faithful). >0 = require per-bin phase coherence R >= ~tonalGate
+        // before notching, so steady tonal feedback is cut but phase-chaotic
+        // content (tambourine/noise) is spared. Off costs nothing.
+        float tonalGate = 0.0f;
     };
 
     FeedbackKillerDSP() = default;
@@ -115,6 +121,7 @@ private:
     bool   b1en=true,b2en=true,b3en=false;
     int    floorWinRadius = 300, floorStride = 1, winStride = 1;
     float  floorWinHz = 1800.f;
+    float  tonalGate = 0.f;     // 0 = phase gate off (faithful)
 
     // analysis scalars
     double lEnergy = 0.0, rEnergy = 0.0;
@@ -135,6 +142,10 @@ private:
     std::vector<float> peakAttenDb;                         // kMaxBins
     std::vector<int>   binHold, leftAnchor, rightAnchor;   // kMaxBins
     std::vector<float> scratchL, scratchR;                 // 2*kMaxBins
+
+    // phase-stability gate state (per bin): previous-hop phase + EMA of the
+    // unit phase-increment vector. |(cohC,cohS)| = coherence R in [0,1].
+    std::vector<float> prevPhase, phaseCohC, phaseCohS, phaseCoh;  // kMaxBins
 
     // analyzer telemetry
     SpectrumTripleBuffer spectrum;

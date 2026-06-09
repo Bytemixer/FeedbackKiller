@@ -35,6 +35,11 @@ void FeedbackKillerDSP::prepare (double sampleRate, int /*maxBlockSize*/, int nu
     scratchL.assign (2 * kMaxBins, 0.0f);
     scratchR.assign (2 * kMaxBins, 0.0f);
 
+    prevPhase.assign (kMaxBins, 0.0f);
+    phaseCohC.assign (kMaxBins, 0.0f);
+    phaseCohS.assign (kMaxBins, 0.0f);
+    phaseCoh.assign  (kMaxBins, 0.0f);
+
     spectrum.prepare (kMaxBins);     // size all telemetry slots once (no alloc in process)
 
     configureFFT (pending.fftOrder);
@@ -75,6 +80,10 @@ void FeedbackKillerDSP::configureFFT (int order)
     std::fill (notchCurr.begin(),   notchCurr.end(),   1.0f);
     std::fill (effTarget.begin(),   effTarget.end(),   1.0f);
     std::fill (vizMag.begin(), vizMag.end(), kEps);
+    std::fill (prevPhase.begin(), prevPhase.end(), 0.0f);
+    std::fill (phaseCohC.begin(), phaseCohC.end(), 0.0f);
+    std::fill (phaseCohS.begin(), phaseCohS.end(), 0.0f);
+    std::fill (phaseCoh.begin(),  phaseCoh.end(),  0.0f);
 
     inPos = 0; samplesToFFT = 0; firstFFTDone = false;
 }
@@ -89,6 +98,7 @@ void FeedbackKillerDSP::updateDerived (const Params& p)
     replaceAnchorClean = juce::jlimit (0.5f, 0.99f, p.replaceAnchorClean);
     mode        = p.mode;
     chanMode    = p.channelMode;
+    tonalGate   = juce::jlimit (0.0f, 1.0f, p.tonalGate);
     notchWidthBins = (int) juce::jlimit (0.0f, 15.0f, p.notchWidthBins);
     notchTaperBins = (int) juce::jlimit (0.0f, 20.0f, p.notchTaperBins);
 
@@ -181,6 +191,21 @@ void FeedbackKillerDSP::dspAnalyzeSpectrum()
         sxyIm[(size_t) k] = mscAlpha * sxyIm[(size_t) k] + (1 - mscAlpha) * (li*rr - lr*ri);
         sxx[(size_t) k]   = mscAlpha * sxx[(size_t) k]   + (1 - mscAlpha) * (lr*lr + li*li);
         syy[(size_t) k]   = mscAlpha * syy[(size_t) k]   + (1 - mscAlpha) * (rr*rr + ri*ri);
+
+        // Phase-stability tonality (only when gated & in-band -> cheap). A steady
+        // sinusoid advances phase by a constant amount each hop, so the EMA of the
+        // unit phase-increment vector keeps |R| -> 1; phase-chaotic content -> 0.
+        if (tonalGate > 0.0f && binInActiveBand (k))
+        {
+            const bool  useR = (magR > magL);
+            const float ph = std::atan2 (useR ? ri : li, useR ? rr : lr);
+            const float d  = ph - prevPhase[(size_t) k];
+            prevPhase[(size_t) k] = ph;
+            phaseCohC[(size_t) k] = mscAlpha * phaseCohC[(size_t) k] + (1 - mscAlpha) * std::cos (d);
+            phaseCohS[(size_t) k] = mscAlpha * phaseCohS[(size_t) k] + (1 - mscAlpha) * std::sin (d);
+            const float cc = phaseCohC[(size_t) k], ss = phaseCohS[(size_t) k];
+            phaseCoh[(size_t) k] = std::sqrt (cc*cc + ss*ss);
+        }
     }
 
     const bool isLeftOnly  = (lEnergy > 0 && rEnergy < lEnergy * 0.001);
@@ -230,8 +255,20 @@ void FeedbackKillerDSP::dspCalculateTargets()
             const float mscWeight = mscBypass ? 1.0f
                                   : (mscExcess > 0 ? min (1.0f, mscExcess / 0.15f) : 0.0f);
 
+            // Phase-stability gate (enhancement): require coherence R near tonalGate
+            // before notching. Off (tonalGate==0) -> weight 1.0 -> faithful.
+            float tonalWeight = 1.0f;
+            if (tonalGate > 0.0f)
+            {
+                const float R  = phaseCoh[(size_t) k];
+                const float lo = tonalGate - 0.20f;
+                const float hi = tonalGate + 0.05f;
+                float t = juce::jlimit (0.0f, 1.0f, (R - lo) / max (1.0e-4f, hi - lo));
+                tonalWeight = t * t * (3.0f - 2.0f * t);     // smoothstep
+            }
+
             const float overFloor = promDb - floorMargin;
-            const float confidence = (overFloor > 0) ? mscWeight : 0.0f;
+            const float confidence = (overFloor > 0) ? mscWeight * tonalWeight : 0.0f;
 
             const float promCut = max (0.0f, overFloor) * overcut * confidence;
             float desAtten = confidence > 0

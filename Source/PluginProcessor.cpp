@@ -68,6 +68,9 @@ FeedbackKillerProcessor::createParameterLayout()
     // --- Spectral Replace ---
     pf ("replaceAnchorClean", "Replace Anchor Clean", { 0.50f, 0.99f, 0.01f }, 0.85f);
 
+    // --- Enhancement: phase-stability tonal gate (0 = off => faithful JSFX) ---
+    pf ("tonalGate", "Tonal Gate (Phase)", { 0.0f, 1.0f, 0.01f }, 0.0f);
+
     // --- Engine ---
     pc ("channelMode", "Channel Mode",
         { "Auto-Detect", "Forced Stereo", "Forced Mono (Bus/Panned)" }, 0);
@@ -105,6 +108,7 @@ FeedbackKillerDSP::Params FeedbackKillerProcessor::readParams() const
     p.releaseMs       = get ("release");
     p.holdMs          = get ("hold");
     p.replaceAnchorClean = get ("replaceAnchorClean");
+    p.tonalGate       = get ("tonalGate");
     p.channelMode     = (int) get ("channelMode");
     p.fftOrder        = 12 + (int) get ("fftSize");   // choice index 0..3 -> order 12..15
     return p;
