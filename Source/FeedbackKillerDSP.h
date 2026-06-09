@@ -116,6 +116,7 @@ private:
     int    mode = 0, chanMode = 0;
     int    notchWidthBins = 1, notchTaperBins = 4;
     float  attackCoef = 0.f, releaseCoef = 0.f, mscAlpha = 0.f;
+    float  phaseAlpha = 0.f;    // dedicated, longer EMA for phase coherence
     int    holdFramesTarget = 1;
     int    b1min=1,b1max=1,b2min=1,b2max=1,b3min=1,b3max=1;
     bool   b1en=true,b2en=true,b3en=false;

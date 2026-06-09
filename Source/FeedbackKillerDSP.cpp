@@ -117,6 +117,9 @@ void FeedbackKillerDSP::updateDerived (const Params& p)
     attackCoef  = std::exp (-1.0f / max (0.01f, p.attackMs  / 1000.0f * fps));
     releaseCoef = std::exp (-1.0f / max (0.01f, p.releaseMs / 1000.0f * fps));
     mscAlpha    = std::exp (-1.0f / max (1.0f,  p.mscIntegrationMs / 1000.0f * fps));
+    // Phase coherence needs many hops to be reliable (small-sample R is biased
+    // high), so it gets its own ~600 ms constant rather than reusing mscAlpha.
+    phaseAlpha  = std::exp (-1.0f / max (1.0f,  0.600f * fps));
     holdFramesTarget = max (1, (int) std::ceil (p.holdMs / 1000.0f * fps));
 }
 
@@ -201,8 +204,8 @@ void FeedbackKillerDSP::dspAnalyzeSpectrum()
             const float ph = std::atan2 (useR ? ri : li, useR ? rr : lr);
             const float d  = ph - prevPhase[(size_t) k];
             prevPhase[(size_t) k] = ph;
-            phaseCohC[(size_t) k] = mscAlpha * phaseCohC[(size_t) k] + (1 - mscAlpha) * std::cos (d);
-            phaseCohS[(size_t) k] = mscAlpha * phaseCohS[(size_t) k] + (1 - mscAlpha) * std::sin (d);
+            phaseCohC[(size_t) k] = phaseAlpha * phaseCohC[(size_t) k] + (1 - phaseAlpha) * std::cos (d);
+            phaseCohS[(size_t) k] = phaseAlpha * phaseCohS[(size_t) k] + (1 - phaseAlpha) * std::sin (d);
             const float cc = phaseCohC[(size_t) k], ss = phaseCohS[(size_t) k];
             phaseCoh[(size_t) k] = std::sqrt (cc*cc + ss*ss);
         }
