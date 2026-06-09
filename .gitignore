@@ -1,0 +1,32 @@
+# Build output
+build/
+Builds/
+out/
+cmake-build-*/
+*.vs/
+.vs/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+
+# IDE
+.idea/
+*.user
+*.vcxproj.user
+
+# Local backup snapshots (git history supersedes these)
+_backups/
+
+# Built artefacts
+*.vst3
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.obj
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
