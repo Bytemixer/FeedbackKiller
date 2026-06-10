@@ -20,12 +20,21 @@ using std::max;
 // ============================================================================
 void FeedbackKillerDSP::prepare (double sampleRate, int /*maxBlockSize*/, int numChannels)
 {
+    // The worker may still be draining a hop staged before the host re-prepared
+    // (e.g. a sample-rate change): hold the engine lock for the whole rebuild
+    // and drop any staged work first, or the worker races the reallocation.
+    const juce::SpinLock::ScopedLockType sl (engineLock);
+    slotReadCount.store (slotWriteCount.load (std::memory_order_relaxed),
+                         std::memory_order_relaxed);
+
     fs = sampleRate;
     (void) numChannels;
 
-    // Pre-build an FFT for every supported order (no allocation in process()).
-    for (int o = 12; o <= kMaxOrder; ++o)
-        ffts[o - 12] = std::make_unique<juce::dsp::FFT> (o);
+    // Pre-build an FFT for every supported order, once (never replaced after:
+    // the worker calls into these and they must stay alive).
+    if (ffts[0] == nullptr)
+        for (int o = 12; o <= kMaxOrder; ++o)
+            ffts[o - 12] = std::make_unique<juce::dsp::FFT> (o);
 
     // Allocate all working storage for the maximum FFT size, once.
     inBufL.assign (kMaxFFT, 0.0f);   inBufR.assign (kMaxFFT, 0.0f);
@@ -72,12 +81,26 @@ void FeedbackKillerDSP::prepare (double sampleRate, int /*maxBlockSize*/, int nu
 
     spectrum.prepare (kMaxBins);     // size all telemetry slots once (no alloc in process)
 
-    configureFFT (pending.fftOrder);
+    // async hop pipeline storage
+    for (auto& s : slots)
+    {
+        s.inL.assign (kMaxHop, 0.0f);
+        s.inR.assign (kMaxHop, 0.0f);
+    }
+    stageL.assign (kMaxHop, 0.0f);
+    stageR.assign (kMaxHop, 0.0f);
+    outFifoL.assign (kMaxHop * 4, 0.0f);
+    outFifoR.assign (kMaxHop * 4, 0.0f);
+
+    resetPipelineLocked (pending.fftOrder);   // engineLock already held above
+
+    if (! isThreadRunning())
+        startThread (juce::Thread::Priority::high);
 }
 
 void FeedbackKillerDSP::reset()
 {
-    configureFFT (fftOrder);
+    resetPipeline (audioOrder);
 }
 
 void FeedbackKillerDSP::configureFFT (int order)
@@ -580,40 +603,200 @@ void FeedbackKillerDSP::runHop()
 }
 
 // ============================================================================
-//  Real-time block entry
+//  Async hop pipeline
+//
+//  Audio thread:  stage input -> hop slots -> pop processed FIFO samples.
+//  Worker thread: hop slots -> engine (runHop, unchanged math) -> FIFO.
+//  Offline:       same path, engine driven inline (deterministic output).
+// ============================================================================
+void FeedbackKillerDSP::run()
+{
+    while (! threadShouldExit())
+    {
+        wait (-1);
+        while (! threadShouldExit())
+        {
+            const int r = slotReadCount.load (std::memory_order_relaxed);
+            if (r == slotWriteCount.load (std::memory_order_acquire))
+                break;
+            {
+                const juce::SpinLock::ScopedLockType sl (engineLock);
+                processSlot (slots[(size_t)(r % kSlots)]);
+            }
+            slotReadCount.store (r + 1, std::memory_order_release);
+        }
+    }
+}
+
+// Runs one staged hop through the engine and emits hopSize processed samples.
+// Caller holds engineLock.
+void FeedbackKillerDSP::processSlot (HopSlot& s)
+{
+    if (s.params.fftOrder != fftOrder)      // belt-and-braces; resetPipeline
+        configureFFT (s.params.fftOrder);   // normally clears stale slots first
+    updateDerived (s.params);
+
+    int s1, n1, s2, n2;
+    outFifo.prepareToWrite (hopSize, s1, n1, s2, n2);
+    if (n1 + n2 < hopSize)                  // FIFO full (output starved of pops)
+        return;                             // drop the hop; debt keeps alignment
+
+    // Mirror of the original per-sample ring logic, in one hop-sized chunk:
+    // emit the finished OLA output at each position, then load the new input.
+    auto emitRange = [this, &s] (int dstStart, int count, int srcOffset)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            outFifoL[(size_t)(dstStart + i)] = firstFFTDone ? outBufL[(size_t) inPos] : 0.0f;
+            outFifoR[(size_t)(dstStart + i)] = firstFFTDone ? outBufR[(size_t) inPos] : 0.0f;
+            outBufL[(size_t) inPos] = 0.0f;
+            outBufR[(size_t) inPos] = 0.0f;
+            inBufL[(size_t) inPos] = s.inL[(size_t)(srcOffset + i)];
+            inBufR[(size_t) inPos] = s.inR[(size_t)(srcOffset + i)];
+            if (++inPos >= fftSize) inPos = 0;
+        }
+    };
+    emitRange (s1, n1, 0);
+    emitRange (s2, n2, n1);
+    outFifo.finishedWrite (n1 + n2);
+
+    runHop();   // analysis window now ends at the freshly loaded samples
+}
+
+void FeedbackKillerDSP::drainSlotsInline()
+{
+    while (true)
+    {
+        const int r = slotReadCount.load (std::memory_order_relaxed);
+        if (r == slotWriteCount.load (std::memory_order_acquire))
+            break;
+        {
+            const juce::SpinLock::ScopedLockType sl (engineLock);
+            processSlot (slots[(size_t)(r % kSlots)]);
+        }
+        slotReadCount.store (r + 1, std::memory_order_release);
+    }
+}
+
+// Full pipeline + engine reset. Audio thread; contends with the worker only on
+// an explicit FFT-size change (bounded by one in-flight hop).
+void FeedbackKillerDSP::resetPipeline (int order)
+{
+    const juce::SpinLock::ScopedLockType sl (engineLock);
+    resetPipelineLocked (order);
+}
+
+void FeedbackKillerDSP::resetPipelineLocked (int order)
+{
+    configureFFT (order);
+
+    slotReadCount.store (slotWriteCount.load (std::memory_order_relaxed),
+                         std::memory_order_relaxed);     // drop staged hops
+    stageFill = 0;
+    outDebt   = 0;
+
+    // Pre-fill TWO hops of silence. Hop k's output is produced just after hop
+    // k+1 finishes staging but is first needed at stream position prefill+k*hop,
+    // so the worker's processing budget is (prefill - hop): two hops of prefill
+    // give it one full hop period (~170 ms @ 32k). This also makes the latency
+    // deterministic in both realtime and offline modes.
+    outFifo.reset();
+    int s1, n1, s2, n2;
+    outFifo.prepareToWrite (2 * hopSize, s1, n1, s2, n2);
+    std::fill_n (outFifoL.begin() + s1, n1, 0.0f);
+    std::fill_n (outFifoR.begin() + s1, n1, 0.0f);
+    std::fill_n (outFifoL.begin() + s2, n2, 0.0f);
+    std::fill_n (outFifoR.begin() + s2, n2, 0.0f);
+    outFifo.finishedWrite (n1 + n2);
+
+    audioOrder = fftOrder;
+    audioHop   = hopSize;
+    latencyAtomic.store (fftSize + 2 * hopSize, std::memory_order_relaxed);
+}
+
+void FeedbackKillerDSP::pushSlot (const Params& p)
+{
+    const int w = slotWriteCount.load (std::memory_order_relaxed);
+    if (w - slotReadCount.load (std::memory_order_acquire) >= kSlots)
+        return;   // worker >4 hops behind; drop (popOutput's debt keeps alignment)
+
+    HopSlot& s = slots[(size_t)(w % kSlots)];
+    s.params = p;
+    std::copy_n (stageL.begin(), audioHop, s.inL.begin());
+    std::copy_n (stageR.begin(), audioHop, s.inR.begin());
+    slotWriteCount.store (w + 1, std::memory_order_release);
+}
+
+void FeedbackKillerDSP::popOutput (float* L, float* R, int n, int numChannels)
+{
+    int avail = outFifo.getNumReady();
+
+    // If we previously emitted silence while starved, swallow the same number
+    // of samples now so the stream stays time-aligned (no drift).
+    if (outDebt > 0 && avail > 0)
+    {
+        const int skip = juce::jmin (outDebt, avail);
+        int s1, n1, s2, n2;
+        outFifo.prepareToRead (skip, s1, n1, s2, n2);
+        outFifo.finishedRead (n1 + n2);
+        outDebt -= (n1 + n2);
+        avail   -= (n1 + n2);
+    }
+
+    const int take = juce::jmin (avail, n);
+    int s1, n1, s2, n2;
+    outFifo.prepareToRead (take, s1, n1, s2, n2);
+    for (int i = 0; i < n1; ++i) L[i] = outFifoL[(size_t)(s1 + i)];
+    for (int i = 0; i < n2; ++i) L[n1 + i] = outFifoL[(size_t)(s2 + i)];
+    if (numChannels > 1)
+    {
+        for (int i = 0; i < n1; ++i) R[i] = outFifoR[(size_t)(s1 + i)];
+        for (int i = 0; i < n2; ++i) R[n1 + i] = outFifoR[(size_t)(s2 + i)];
+    }
+    outFifo.finishedRead (n1 + n2);
+
+    if (take < n)   // starved: emit silence, remember the debt
+    {
+        for (int i = take; i < n; ++i) L[i] = 0.0f;
+        if (numChannels > 1)
+            for (int i = take; i < n; ++i) R[i] = 0.0f;
+        outDebt += n - take;
+    }
+}
+
+// ============================================================================
+//  Real-time block entry (audio thread: no FFT work, no allocation)
 // ============================================================================
 void FeedbackKillerDSP::process (float* const* channels, int numChannels, int numSamples)
 {
     const Params p = pending;
-    if (p.fftOrder != fftOrder)
-        configureFFT (p.fftOrder);
-    updateDerived (p);
+    if (p.fftOrder != audioOrder)
+        resetPipeline (p.fftOrder);     // rare, user-initiated; bounded wait
 
     float* chL = channels[0];
     float* chR = (numChannels > 1) ? channels[1] : channels[0];
 
-    for (int n = 0; n < numSamples; ++n)
+    int n = 0;
+    while (n < numSamples)
     {
-        const float inL = chL[n];
-        const float inR = (numChannels > 1) ? chR[n] : inL;
+        const int chunk = juce::jmin (numSamples - n, audioHop - stageFill);
 
-        inBufL[(size_t) inPos] = inL;
-        inBufR[(size_t) inPos] = inR;
-
-        const float oL = firstFFTDone ? outBufL[(size_t) inPos] : 0.0f;
-        const float oR = firstFFTDone ? outBufR[(size_t) inPos] : 0.0f;
-        outBufL[(size_t) inPos] = 0.0f;
-        outBufR[(size_t) inPos] = 0.0f;
-
-        chL[n] = oL;
-        if (numChannels > 1) chR[n] = oR;
-
-        if (++inPos >= fftSize) inPos = 0;
-
-        if (++samplesToFFT >= hopSize)
+        for (int i = 0; i < chunk; ++i)
         {
-            samplesToFFT = 0;
-            runHop();
+            stageL[(size_t)(stageFill + i)] = chL[n + i];
+            stageR[(size_t)(stageFill + i)] = (numChannels > 1) ? chR[n + i] : chL[n + i];
         }
+        stageFill += chunk;
+
+        if (stageFill == audioHop)
+        {
+            pushSlot (p);
+            stageFill = 0;
+            if (realtime) notify();
+            else          drainSlotsInline();
+        }
+
+        popOutput (chL + n, chR + n, chunk, numChannels);
+        n += chunk;
     }
 }

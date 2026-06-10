@@ -152,6 +152,7 @@ void FeedbackKillerProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     SafetyGuard::makeFinite (buffer);   // keep bad input from poisoning recursive state
 
     dsp.setParams (readParams());
+    dsp.setRealtime (! isNonRealtime());   // offline render runs the hop engine inline
     dsp.process (buffer.getArrayOfWritePointers(), buffer.getNumChannels(), buffer.getNumSamples());
 
     safety.sanitize (buffer);           // protect-your-ears: no NaN/Inf or blow-up ever leaves

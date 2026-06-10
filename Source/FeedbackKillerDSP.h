@@ -27,12 +27,28 @@
 //    load+FFT -> analyze spectrum (+MSC) -> robust floor -> targets -> hold ->
 //    dilation/taper + attack/release smoothing -> strategy (mode) -> IFFT+OLA.
 //
+//  THREADING (async hop engine):
+//  The whole spectral hop is a burst of work (4x 32k FFTs + the robust floor
+//  scan) that lands in a single device block. At pro buffer sizes (<=128) that
+//  burst can miss the real-time deadline, so the audio thread never runs it:
+//
+//    audio thread:  stage input -> hop slot ring -> pop processed FIFO output
+//    worker thread: slot ring -> engine (the JSFX hop, unchanged) -> FIFO
+//
+//  This costs two extra hops of latency (reported as fftSize + 2*hopSize, host
+//  PDC-compensated) and gives the engine a full hop period (~170 ms @ 32k) of
+//  budget instead of one device buffer (~3 ms). Offline render drives the same
+//  pipeline inline on the calling thread, so output is deterministic and
+//  identical to real time. If the worker ever falls behind, the output FIFO
+//  emits silence and re-aligns via a sample-debt counter (no drift).
+//
 //  All buffers are pre-allocated in prepare() for the MAX FFT size (32768);
 //  changing FFT size at runtime only recomputes derived values + clears state,
-//  never allocates. Nothing here allocates, locks, or blocks in process().
+//  never allocates. Nothing here allocates, locks, or blocks in process()
+//  (the engine SpinLock is contended only on an explicit FFT-size change).
 // ============================================================================
 
-class FeedbackKillerDSP
+class FeedbackKillerDSP : private juce::Thread
 {
 public:
     // Per-block parameter snapshot, pushed by the processor before process().
@@ -74,15 +90,24 @@ public:
         float tonalGate = 0.0f;
     };
 
-    FeedbackKillerDSP() = default;
+    FeedbackKillerDSP() : juce::Thread ("FK Hop Worker") {}
+    ~FeedbackKillerDSP() override
+    {
+        signalThreadShouldExit();
+        notify();
+        stopThread (2000);
+    }
 
     void prepare (double sampleRate, int maxBlockSize, int numChannels);
     void reset();
 
     void setParams (const Params& p) { pending = p; }
 
-    // Latency in samples the host must compensate (== current FFT size).
-    int  getLatencySamples() const { return fftSize; }
+    // Real time: hops run on the worker thread. Offline render: inline.
+    void setRealtime (bool isRealtime) noexcept { realtime = isRealtime; }
+
+    // Latency the host must compensate: fftSize (STFT) + 2*hopSize (async budget).
+    int  getLatencySamples() const { return latencyAtomic.load (std::memory_order_relaxed); }
 
     void process (float* const* channels, int numChannels, int numSamples);
 
@@ -96,11 +121,13 @@ private:
     static constexpr int kMaxOrder  = 15;          // 32768
     static constexpr int kMaxFFT    = 1 << kMaxOrder;
     static constexpr int kMaxBins   = kMaxFFT / 2;
+    static constexpr int kMaxHop    = kMaxFFT / 4;
+    static constexpr int kSlots     = 4;           // staged-hop ring depth
     static constexpr double kOlaGain = 1.5;
     static constexpr float  kEps     = 1.0e-9f;
 
     void configureFFT (int order);                 // recompute derived values + clear
-    void updateDerived (const Params& p);          // band bins, coefs, msc alpha (per block)
+    void updateDerived (const Params& p);          // band bins, coefs, msc alpha (per hop)
     bool binInActiveBand (int k) const;
 
     // Per-channel detection view. Linked modes run the pipeline once on the
@@ -135,7 +162,22 @@ private:
     void strategySoloCh    (float* fft, int k, float g);
     void strategyReplaceCh (float* fft, const float* scratch, const ChanState& c, int k);
 
-    // ---- runtime state ----
+    // ---- async hop pipeline ----
+    struct HopSlot
+    {
+        Params params;
+        std::vector<float> inL, inR;   // kMaxHop each
+    };
+
+    void run() override;                           // worker loop
+    void processSlot (HopSlot& s);                 // one staged hop through the engine
+    void drainSlotsInline();                       // offline-render path
+    void resetPipeline (int order);                // audio thread; takes engineLock
+    void resetPipelineLocked (int order);          // core; caller holds engineLock
+    void pushSlot (const Params& p);
+    void popOutput (float* L, float* R, int n, int numChannels);
+
+    // ---- runtime state (engine: owned by the worker / lock holder) ----
     double fs = 44100.0;
     int    fftSize = 8192, hopSize = 2048, nbins = 4096, fftOrder = 13;
     float  olaNorm = 1.0f;
@@ -143,7 +185,7 @@ private:
     int    inPos = 0, samplesToFFT = 0;
     bool   firstFFTDone = false;
 
-    // derived per block
+    // derived per hop
     float  mscThresh = 0.7f, floorMargin = 16.f, maxAttenDb = 60.f;
     float  overcut = 1.6f, minCutDb = 4.f, replaceAnchorClean = 0.85f;
     int    mode = 0, chanMode = 0;
@@ -187,6 +229,25 @@ private:
     // phase-stability gate state (per bin): previous-hop phase + EMA of the
     // unit phase-increment vector. |(cohC,cohS)| = coherence R in [0,1].
     std::vector<float> prevPhase, phaseCohC, phaseCohS, phaseCoh;  // kMaxBins
+
+    // ---- async pipeline state ----
+    HopSlot           slots[kSlots];
+    std::atomic<int>  slotWriteCount { 0 }, slotReadCount { 0 };
+    std::vector<float> stageL, stageR;                     // kMaxHop staging
+    int               stageFill = 0;
+
+    juce::AbstractFifo outFifo { kMaxHop * 4 };
+    std::vector<float> outFifoL, outFifoR;                 // kMaxHop*4 each
+    int               outDebt = 0;                          // silence emitted while starved
+
+    int               audioOrder = 13, audioHop = 2048;    // audio-thread view
+    std::atomic<int>  latencyAtomic { 8192 + 2048 };
+    bool              realtime = true;
+
+    // Guards the engine + FIFO across worker / inline-drain / FFT-size reset.
+    // Never contended in steady state (worker holds it per slot; the audio
+    // thread takes it only on an explicit FFT-size change).
+    juce::SpinLock    engineLock;
 
     // analyzer telemetry
     SpectrumTripleBuffer spectrum;
