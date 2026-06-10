@@ -64,9 +64,14 @@ Built with the [JUCE framework](https://juce.com) under AGPLv3. See
 [NOTICE.md](NOTICE.md) for third-party notices. VST is a trademark of
 Steinberg Media Technologies GmbH.
 
-## Support the project
+## Getting the plugin
 
-Prebuilt, ready-to-use binaries are available pay-what-you-want:
+This is **open-source, commercially distributed** software ("free" in the AGPL
+sense refers to the license freedoms, not the price):
 
-- Ko-fi: *(link TBD)*
-- itch.io: *(link TBD)*
+- **Prebuilt binaries** are sold pay-what-you-want (with a minimum) — you are
+  paying for the ready-to-use build and for supporting development:
+  - itch.io: *(link TBD)*
+  - Ko-fi (tips / support): *(link TBD)*
+- **Source code** is right here under the AGPL — you are always welcome to
+  build it yourself for free using the instructions above.
