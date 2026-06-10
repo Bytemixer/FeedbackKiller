@@ -34,8 +34,8 @@ workload). macOS/Linux are untested but nothing in the code is
 Windows-specific; JUCE handles the platform layer.
 
 ```sh
-git clone https://github.com/Bytemixer/feedback-resonance-killer.git
-cd feedback-resonance-killer
+git clone https://github.com/Bytemixer/FeedbackKiller.git
+cd FeedbackKiller
 
 # Option A: let CMake download JUCE automatically
 cmake -B build

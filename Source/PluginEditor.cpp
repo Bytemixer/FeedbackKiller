@@ -114,8 +114,8 @@ FeedbackKillerEditor::FeedbackKillerEditor (FeedbackKillerProcessor& p)
 //  About overlay - the AGPL "Appropriate Legal Notices"
 // ============================================================================
 FeedbackKillerEditor::AboutOverlay::AboutOverlay()
-    : repoLink ("github.com/Bytemixer/feedback-resonance-killer",
-                juce::URL ("https://github.com/Bytemixer/feedback-resonance-killer"))
+    : repoLink ("github.com/Bytemixer/FeedbackKiller",
+                juce::URL ("https://github.com/Bytemixer/FeedbackKiller"))
 {
     setInterceptsMouseClicks (true, true);
     repoLink.setFont (juce::FontOptions (14.0f), false);
