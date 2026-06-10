@@ -171,7 +171,7 @@ private:
 
     void run() override;                           // worker loop
     void processSlot (HopSlot& s);                 // one staged hop through the engine
-    void drainSlotsInline();                       // offline-render path
+    void drainStagedSlots();                       // serialized consumer (worker/inline)
     void resetPipeline (int order);                // audio thread; takes engineLock
     void resetPipelineLocked (int order);          // core; caller holds engineLock
     void pushSlot (const Params& p);

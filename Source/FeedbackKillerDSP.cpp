@@ -614,17 +614,7 @@ void FeedbackKillerDSP::run()
     while (! threadShouldExit())
     {
         wait (-1);
-        while (! threadShouldExit())
-        {
-            const int r = slotReadCount.load (std::memory_order_relaxed);
-            if (r == slotWriteCount.load (std::memory_order_acquire))
-                break;
-            {
-                const juce::SpinLock::ScopedLockType sl (engineLock);
-                processSlot (slots[(size_t)(r % kSlots)]);
-            }
-            slotReadCount.store (r + 1, std::memory_order_release);
-        }
+        drainStagedSlots();
     }
 }
 
@@ -663,17 +653,20 @@ void FeedbackKillerDSP::processSlot (HopSlot& s)
     runHop();   // analysis window now ends at the freshly loaded samples
 }
 
-void FeedbackKillerDSP::drainSlotsInline()
+// Single consumer routine, shared by the worker thread and any caller that
+// needs output NOW (offline render, or a consumer outpacing the worker — e.g.
+// REAPER's anticipative FX bursts). The check-process-advance sequence is
+// serialized under engineLock so two consumers can never process the same
+// slot twice.
+void FeedbackKillerDSP::drainStagedSlots()
 {
-    while (true)
+    for (;;)
     {
+        const juce::SpinLock::ScopedLockType sl (engineLock);
         const int r = slotReadCount.load (std::memory_order_relaxed);
         if (r == slotWriteCount.load (std::memory_order_acquire))
-            break;
-        {
-            const juce::SpinLock::ScopedLockType sl (engineLock);
-            processSlot (slots[(size_t)(r % kSlots)]);
-        }
+            return;
+        processSlot (slots[(size_t)(r % kSlots)]);
         slotReadCount.store (r + 1, std::memory_order_release);
     }
 }
@@ -730,6 +723,17 @@ void FeedbackKillerDSP::pushSlot (const Params& p)
 void FeedbackKillerDSP::popOutput (float* L, float* R, int n, int numChannels)
 {
     int avail = outFifo.getNumReady();
+
+    // Consumer outpacing the worker (anticipative/bursty hosts, offline): do
+    // the staged work right here instead of starving. On a real-time device
+    // thread the worker keeps up and this never triggers.
+    if (avail < n + outDebt
+        && slotReadCount.load (std::memory_order_relaxed)
+           != slotWriteCount.load (std::memory_order_acquire))
+    {
+        drainStagedSlots();
+        avail = outFifo.getNumReady();
+    }
 
     // If we previously emitted silence while starved, swallow the same number
     // of samples now so the stream stays time-aligned (no drift).
@@ -793,7 +797,7 @@ void FeedbackKillerDSP::process (float* const* channels, int numChannels, int nu
             pushSlot (p);
             stageFill = 0;
             if (realtime) notify();
-            else          drainSlotsInline();
+            else          drainStagedSlots();
         }
 
         popOutput (chL + n, chR + n, chunk, numChannels);
