@@ -49,7 +49,11 @@ public:
 
         float replaceAnchorClean = 0.85f;
 
-        int   channelMode = 0;      // 0 Auto, 1 Forced Stereo, 2 Forced Mono
+        // 0 Auto, 1 Forced Stereo, 2 Forced Mono, 3 Unlinked Dual-Mono.
+        // Unlinked (enhancement, diverges from JSFX): each channel gets its own
+        // floor/prominence/hold/notch, so a one-sided resonance is cut only in
+        // the channel it lives in. MSC is bypassed (single-channel detection).
+        int   channelMode = 0;
         int   fftOrder = 13;        // log2(fftSize): 12..15 -> 4096..32768
 
         // Enhancement (diverges from JSFX): phase-stability "tonal" gate.
@@ -87,20 +91,38 @@ private:
     void configureFFT (int order);                 // recompute derived values + clear
     void updateDerived (const Params& p);          // band bins, coefs, msc alpha (per block)
     bool binInActiveBand (int k) const;
-    float robustFloorBin (int k, int r, int st) const;
+
+    // Per-channel detection view. Linked modes run the pipeline once on the
+    // shared state (chA) and apply it to both channels; Unlinked Dual-Mono runs
+    // it twice (chA = left, chB = right). Pointers into the pre-allocated
+    // vectors below — no ownership, no allocation.
+    struct ChanState
+    {
+        float* mag;          // input magnitude per bin
+        float* floorM;       // robust floor
+        float* notchTarget;  // raw per-bin target gain
+        float* notchCurr;    // smoothed applied gain
+        float* effTarget;    // dilated/tapered target
+        float* peakAtten;    // hold engine: held attenuation (dB)
+        int*   hold;         // hold engine: frames remaining
+        int*   lAnchor;      // Spectral Replace: nearest clean bin left
+        int*   rAnchor;      // Spectral Replace: nearest clean bin right
+    };
+
+    float robustFloorBin (const float* mag, int k, int r, int st) const;
 
     void runHop();                                 // the full JSFX @sample hop body
     void dspLoadAndFFT();
     void dspAnalyzeSpectrum();
-    void dspCalculateFloor();
-    void dspCalculateTargets();
-    void dspApplyDilationAndSmoothing();
+    void dspCalculateFloor (ChanState& c);
+    void dspCalculateTargets (ChanState& c, bool writeViz);
+    void dspApplyDilationAndSmoothing (ChanState& c);
     void dspApplyStrategy();
     void dspIfftAndOla();
 
-    void strategyProcess (int k, float g);
-    void strategySolo    (int k, float g);
-    void strategyReplace (int k);
+    void strategyProcessCh (float* fft, int k, float g);
+    void strategySoloCh    (float* fft, int k, float g);
+    void strategyReplaceCh (float* fft, const float* scratch, const ChanState& c, int k);
 
     // ---- runtime state ----
     double fs = 44100.0;
@@ -143,6 +165,13 @@ private:
     std::vector<float> peakAttenDb;                         // kMaxBins
     std::vector<int>   binHold, leftAnchor, rightAnchor;   // kMaxBins
     std::vector<float> scratchL, scratchR;                 // 2*kMaxBins
+
+    // Unlinked Dual-Mono: independent right-channel detection state (the
+    // shared/left set above doubles as the left channel in that mode).
+    std::vector<float> vizMagR, magSmoothR, notchTargetR, notchCurrR,
+                       effTargetR, peakAttenDbR;           // kMaxBins
+    std::vector<int>   binHoldR, leftAnchorR, rightAnchorR; // kMaxBins
+    ChanState chA {}, chB {};                              // views set in prepare()
 
     // phase-stability gate state (per bin): previous-hop phase + EMA of the
     // unit phase-increment vector. |(cohC,cohS)| = coherence R in [0,1].

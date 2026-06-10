@@ -35,6 +35,25 @@ void FeedbackKillerDSP::prepare (double sampleRate, int /*maxBlockSize*/, int nu
     scratchL.assign (2 * kMaxBins, 0.0f);
     scratchR.assign (2 * kMaxBins, 0.0f);
 
+    vizMagR.assign (kMaxBins, kEps);
+    magSmoothR.assign (kMaxBins, 0.0f);
+    notchTargetR.assign (kMaxBins, 1.0f);
+    notchCurrR.assign (kMaxBins, 1.0f);
+    effTargetR.assign (kMaxBins, 1.0f);
+    peakAttenDbR.assign (kMaxBins, 0.0f);
+    binHoldR.assign (kMaxBins, 0);
+    leftAnchorR.assign (kMaxBins, 0);
+    rightAnchorR.assign (kMaxBins, 0);
+
+    // Channel views: chA = shared/left detection state, chB = right (unlinked).
+    // The vectors never reallocate after prepare(), so these pointers are stable.
+    chA = { vizMag.data(),  magSmooth.data(),  notchTarget.data(),  notchCurr.data(),
+            effTarget.data(),  peakAttenDb.data(),  binHold.data(),
+            leftAnchor.data(),  rightAnchor.data() };
+    chB = { vizMagR.data(), magSmoothR.data(), notchTargetR.data(), notchCurrR.data(),
+            effTargetR.data(), peakAttenDbR.data(), binHoldR.data(),
+            leftAnchorR.data(), rightAnchorR.data() };
+
     prevPhase.assign (kMaxBins, 0.0f);
     phaseCohC.assign (kMaxBins, 0.0f);
     phaseCohS.assign (kMaxBins, 0.0f);
@@ -80,6 +99,12 @@ void FeedbackKillerDSP::configureFFT (int order)
     std::fill (notchCurr.begin(),   notchCurr.end(),   1.0f);
     std::fill (effTarget.begin(),   effTarget.end(),   1.0f);
     std::fill (vizMag.begin(), vizMag.end(), kEps);
+    std::fill (peakAttenDbR.begin(), peakAttenDbR.end(), 0.0f);
+    std::fill (binHoldR.begin(), binHoldR.end(), 0);
+    std::fill (notchTargetR.begin(), notchTargetR.end(), 1.0f);
+    std::fill (notchCurrR.begin(),   notchCurrR.end(),   1.0f);
+    std::fill (effTargetR.begin(),   effTargetR.end(),   1.0f);
+    std::fill (vizMagR.begin(), vizMagR.end(), kEps);
     std::fill (prevPhase.begin(), prevPhase.end(), 0.0f);
     std::fill (phaseCohC.begin(), phaseCohC.end(), 0.0f);
     std::fill (phaseCohS.begin(), phaseCohS.end(), 0.0f);
@@ -133,22 +158,22 @@ bool FeedbackKillerDSP::binInActiveBand (int k) const
         || (b3en && k >= b3min && k <= b3max);
 }
 
-float FeedbackKillerDSP::robustFloorBin (int k, int r, int st) const
+float FeedbackKillerDSP::robustFloorBin (const float* mag, int k, int r, int st) const
 {
     const int lo = max (1, k - r);
     const int hi = min (nbins - 1, k + r);
     const int np = (hi - lo) / st + 1;
 
     double sum = 0.0; int n = 0; int j = lo;
-    for (int c = 0; c < np; ++c) { sum += vizMag[(size_t) j]; ++n; j += st; }
-    float m1 = (n > 0) ? (float) (sum / n) : vizMag[(size_t) k];
+    for (int c = 0; c < np; ++c) { sum += mag[j]; ++n; j += st; }
+    float m1 = (n > 0) ? (float) (sum / n) : mag[k];
 
     sum = 0.0; int cnt = 0; j = lo;
-    for (int c = 0; c < np; ++c) { float v = vizMag[(size_t) j]; if (v < m1) { sum += v; ++cnt; } j += st; }
+    for (int c = 0; c < np; ++c) { float v = mag[j]; if (v < m1) { sum += v; ++cnt; } j += st; }
     float m2 = (cnt > 0) ? (float) (sum / cnt) : m1;
 
     sum = 0.0; cnt = 0; j = lo;
-    for (int c = 0; c < np; ++c) { float v = vizMag[(size_t) j]; if (v < m2) { sum += v; ++cnt; } j += st; }
+    for (int c = 0; c < np; ++c) { float v = mag[j]; if (v < m2) { sum += v; ++cnt; } j += st; }
     if (cnt > 0) m2 = (float) (sum / cnt);
 
     return max (m2, kEps);
@@ -182,18 +207,28 @@ void FeedbackKillerDSP::dspAnalyzeSpectrum()
         const float rr = fftR[(size_t)(2*k)],   ri = fftR[(size_t)(2*k+1)];
         const float magL = std::sqrt (lr*lr + li*li);
         const float magR = std::sqrt (rr*rr + ri*ri);
-        const float magAvg = (chanMode == 2) ? max (magL, magR) : ((magL + magR) * 0.5f);
-
-        vizMag[(size_t) k] = magAvg + kEps;
+        if (chanMode == 3)   // Unlinked: each channel keeps its own magnitude
+        {
+            vizMag[(size_t) k]  = magL + kEps;
+            vizMagR[(size_t) k] = magR + kEps;
+        }
+        else
+        {
+            const float magAvg = (chanMode == 2) ? max (magL, magR) : ((magL + magR) * 0.5f);
+            vizMag[(size_t) k] = magAvg + kEps;
+        }
         lEnergy += lr*lr + li*li;
         rEnergy += rr*rr + ri*ri;
         blockXYre += lr*rr + li*ri;
         blockXYim += li*rr - lr*ri;
 
-        sxyRe[(size_t) k] = mscAlpha * sxyRe[(size_t) k] + (1 - mscAlpha) * (lr*rr + li*ri);
-        sxyIm[(size_t) k] = mscAlpha * sxyIm[(size_t) k] + (1 - mscAlpha) * (li*rr - lr*ri);
-        sxx[(size_t) k]   = mscAlpha * sxx[(size_t) k]   + (1 - mscAlpha) * (lr*lr + li*li);
-        syy[(size_t) k]   = mscAlpha * syy[(size_t) k]   + (1 - mscAlpha) * (rr*rr + ri*ri);
+        if (chanMode != 3)   // MSC is meaningless with single-channel detection
+        {
+            sxyRe[(size_t) k] = mscAlpha * sxyRe[(size_t) k] + (1 - mscAlpha) * (lr*rr + li*ri);
+            sxyIm[(size_t) k] = mscAlpha * sxyIm[(size_t) k] + (1 - mscAlpha) * (li*rr - lr*ri);
+            sxx[(size_t) k]   = mscAlpha * sxx[(size_t) k]   + (1 - mscAlpha) * (lr*lr + li*li);
+            syy[(size_t) k]   = mscAlpha * syy[(size_t) k]   + (1 - mscAlpha) * (rr*rr + ri*ri);
+        }
 
         // Phase-stability tonality (only when gated & in-band -> cheap). A steady
         // sinusoid advances phase by a constant amount each hop, so the EMA of the
@@ -221,24 +256,27 @@ void FeedbackKillerDSP::dspAnalyzeSpectrum()
     autoMscBypass = (isMono || isDualMono) ? 1 : 0;
 }
 
-void FeedbackKillerDSP::dspCalculateFloor()
+void FeedbackKillerDSP::dspCalculateFloor (ChanState& c)
 {
     float lastFloor = kEps; int cnt = 0;
     for (int k = 1; k < nbins; ++k)
     {
         if (binInActiveBand (k))
         {
-            if (cnt <= 0) { lastFloor = robustFloorBin (k, floorWinRadius, winStride); cnt = floorStride; }
+            if (cnt <= 0) { lastFloor = robustFloorBin (c.mag, k, floorWinRadius, winStride); cnt = floorStride; }
             --cnt;
-            magSmooth[(size_t) k] = lastFloor;
+            c.floorM[k] = lastFloor;
         }
-        else { magSmooth[(size_t) k] = vizMag[(size_t) k]; cnt = 0; }
+        else { c.floorM[k] = c.mag[k]; cnt = 0; }
     }
 }
 
-void FeedbackKillerDSP::dspCalculateTargets()
+void FeedbackKillerDSP::dspCalculateTargets (ChanState& c, bool writeViz)
 {
-    const int mscBypass = (chanMode == 2) ? 1 : (chanMode == 0 ? autoMscBypass : 0);
+    // Forced Mono and Unlinked Dual-Mono both run single-channel detection,
+    // so cross-channel coherence cannot gate the cut.
+    const int mscBypass = (chanMode == 2 || chanMode == 3) ? 1
+                        : (chanMode == 0 ? autoMscBypass : 0);
     const float log10inv = 0.43429448190325176f;
 
     for (int k = 1; k < nbins; ++k)
@@ -246,13 +284,17 @@ void FeedbackKillerDSP::dspCalculateTargets()
         const bool inRange = binInActiveBand (k);
         if (inRange)
         {
-            const float dn = sxx[(size_t) k] * syy[(size_t) k];
-            const float msc = dn > 0 ? (sxyRe[(size_t) k]*sxyRe[(size_t) k]
-                                      + sxyIm[(size_t) k]*sxyIm[(size_t) k]) / dn : 0.0f;
-            vizMsc[(size_t) k] = msc;
+            float msc = 0.0f;
+            if (!mscBypass || writeViz)
+            {
+                const float dn = sxx[(size_t) k] * syy[(size_t) k];
+                msc = dn > 0 ? (sxyRe[(size_t) k]*sxyRe[(size_t) k]
+                              + sxyIm[(size_t) k]*sxyIm[(size_t) k]) / dn : 0.0f;
+            }
+            if (writeViz) vizMsc[(size_t) k] = msc;
 
-            const float floorVal = magSmooth[(size_t) k];
-            const float promDb = 20.0f * std::log (vizMag[(size_t) k] / floorVal) * log10inv;
+            const float floorVal = c.floorM[k];
+            const float promDb = 20.0f * std::log (c.mag[k] / floorVal) * log10inv;
 
             const float mscExcess = msc - mscThresh;
             const float mscWeight = mscBypass ? 1.0f
@@ -277,42 +319,42 @@ void FeedbackKillerDSP::dspCalculateTargets()
             float desAtten = confidence > 0
                 ? min (maxAttenDb, max (minCutDb * confidence * confidence, promCut)) : 0.0f;
 
-            const bool doUpdate   = desAtten > peakAttenDb[(size_t) k];
-            const bool wasHolding = binHold[(size_t) k] > 0;
-            if (doUpdate) { peakAttenDb[(size_t) k] = desAtten; binHold[(size_t) k] = holdFramesTarget; }
-            if (!doUpdate && wasHolding) { binHold[(size_t) k] -= 1; desAtten = peakAttenDb[(size_t) k]; }
-            if (!doUpdate && !wasHolding) { peakAttenDb[(size_t) k] = 0.0f; }
+            const bool doUpdate   = desAtten > c.peakAtten[k];
+            const bool wasHolding = c.hold[k] > 0;
+            if (doUpdate) { c.peakAtten[k] = desAtten; c.hold[k] = holdFramesTarget; }
+            if (!doUpdate && wasHolding) { c.hold[k] -= 1; desAtten = c.peakAtten[k]; }
+            if (!doUpdate && !wasHolding) { c.peakAtten[k] = 0.0f; }
 
-            notchTarget[(size_t) k] = desAtten > 0.01f
+            c.notchTarget[k] = desAtten > 0.01f
                 ? std::exp (-desAtten / 20.0f / log10inv) : 1.0f;
         }
         else
         {
-            vizMsc[(size_t) k] = 0.0f;
-            peakAttenDb[(size_t) k] = 0.0f;
-            binHold[(size_t) k] = 0;
-            notchTarget[(size_t) k] = 1.0f;
+            if (writeViz) vizMsc[(size_t) k] = 0.0f;
+            c.peakAtten[k] = 0.0f;
+            c.hold[k] = 0;
+            c.notchTarget[k] = 1.0f;
         }
     }
 }
 
-void FeedbackKillerDSP::dspApplyDilationAndSmoothing()
+void FeedbackKillerDSP::dspApplyDilationAndSmoothing (ChanState& c)
 {
     const float log10inv = 0.43429448190325176f;
-    for (int k = 1; k < nbins; ++k) effTarget[(size_t) k] = 1.0f;
+    for (int k = 1; k < nbins; ++k) c.effTarget[k] = 1.0f;
 
     for (int k = 1; k < nbins; ++k)
     {
-        if (notchTarget[(size_t) k] < 0.99f)
+        if (c.notchTarget[k] < 0.99f)
         {
-            const float tgt = notchTarget[(size_t) k];
+            const float tgt = c.notchTarget[k];
             const float attenLoc = -20.0f * std::log (max (tgt, kEps)) * log10inv;
 
             const int lo = max (1, k - notchWidthBins);
             const int hi = min (nbins - 1, k + notchWidthBins);
             for (int j = lo; j <= hi; ++j)
                 if (binInActiveBand (j))
-                    effTarget[(size_t) j] = min (effTarget[(size_t) j], tgt);
+                    c.effTarget[j] = min (c.effTarget[j], tgt);
 
             if (notchTaperBins > 0)
             {
@@ -323,10 +365,10 @@ void FeedbackKillerDSP::dspApplyDilationAndSmoothing()
                     const float gainTap = std::exp (-(attenLoc * taperF) / 20.0f / log10inv);
                     int ti = k - notchWidthBins - e;
                     if (ti >= 1 && binInActiveBand (ti))
-                        effTarget[(size_t) ti] = min (effTarget[(size_t) ti], gainTap);
+                        c.effTarget[ti] = min (c.effTarget[ti], gainTap);
                     ti = k + notchWidthBins + e;
                     if (ti <= nbins - 1 && binInActiveBand (ti))
-                        effTarget[(size_t) ti] = min (effTarget[(size_t) ti], gainTap);
+                        c.effTarget[ti] = min (c.effTarget[ti], gainTap);
                 }
             }
         }
@@ -334,100 +376,115 @@ void FeedbackKillerDSP::dspApplyDilationAndSmoothing()
 
     for (int k = 1; k < nbins; ++k)
     {
-        const float tgt = effTarget[(size_t) k];
-        const float cur = notchCurr[(size_t) k];
+        const float tgt = c.effTarget[k];
+        const float cur = c.notchCurr[k];
         const float tgtDb = -20.0f * std::log (max (tgt, kEps)) * log10inv;
         const float curDb = -20.0f * std::log (max (cur, kEps)) * log10inv;
         const float coef  = (tgtDb > curDb) ? attackCoef : releaseCoef;
         const float newDb = tgtDb + (curDb - tgtDb) * coef;
-        notchCurr[(size_t) k] = std::exp (-newDb / 20.0f / log10inv);
+        c.notchCurr[k] = std::exp (-newDb / 20.0f / log10inv);
     }
 }
 
-// ---- strategies ----
-void FeedbackKillerDSP::strategyProcess (int k, float g)
+// ---- strategies (single-channel; called once per channel) ----
+void FeedbackKillerDSP::strategyProcessCh (float* fft, int k, float g)
 {
-    fftL[(size_t)(2*k)] *= g; fftL[(size_t)(2*k+1)] *= g;
-    fftR[(size_t)(2*k)] *= g; fftR[(size_t)(2*k+1)] *= g;
+    fft[2*k] *= g; fft[2*k+1] *= g;
 }
 
-void FeedbackKillerDSP::strategySolo (int k, float g)
+void FeedbackKillerDSP::strategySoloCh (float* fft, int k, float g)
 {
     float sg = 1.0f - g; if (sg < 0.15f) sg = 0.0f;
-    fftL[(size_t)(2*k)] *= sg; fftL[(size_t)(2*k+1)] *= sg;
-    fftR[(size_t)(2*k)] *= sg; fftR[(size_t)(2*k+1)] *= sg;
+    fft[2*k] *= sg; fft[2*k+1] *= sg;
 }
 
-void FeedbackKillerDSP::strategyReplace (int k)
+void FeedbackKillerDSP::strategyReplaceCh (float* fft, const float* scratch,
+                                           const ChanState& c, int k)
 {
-    const float replaceW = 1.0f - notchCurr[(size_t) k];
+    const float replaceW = 1.0f - c.notchCurr[k];
+
+    auto mag = [scratch] (int idx)
+    { return std::sqrt (scratch[2*idx]*scratch[2*idx] + scratch[2*idx+1]*scratch[2*idx+1]); };
+
     if (replaceW > 0.05f)
     {
-        const bool inBand = binInActiveBand (k);
-        if (inBand)
+        if (binInActiveBand (k))
         {
-            const int la = leftAnchor[(size_t) k];
-            const int ra = rightAnchor[(size_t) k];
+            const int la = c.lAnchor[k];
+            const int ra = c.rAnchor[k];
             bool handled = false;
 
-            auto mag = [] (const std::vector<float>& s, int idx)
-            { return std::sqrt (s[(size_t)(2*idx)]*s[(size_t)(2*idx)]
-                              + s[(size_t)(2*idx+1)]*s[(size_t)(2*idx+1)]); };
-
-            if (!handled && la >= 1 && ra >= 1 && ra > la)
+            if (la >= 1 && ra >= 1 && ra > la)
             {
                 const float t = (float)(k - la) / (float)(ra - la), omt = 1.0f - t;
-                const float tgtL = mag (scratchL, la) * omt + mag (scratchL, ra) * t;
-                const float tgtR = mag (scratchR, la) * omt + mag (scratchR, ra) * t;
-                const float curL = mag (scratchL, k) + kEps;
-                const float curR = mag (scratchR, k) + kEps;
-                const float gL = (1 - replaceW) + min (1.0f, tgtL / curL) * replaceW;
-                const float gR = (1 - replaceW) + min (1.0f, tgtR / curR) * replaceW;
-                fftL[(size_t)(2*k)] = scratchL[(size_t)(2*k)] * gL; fftL[(size_t)(2*k+1)] = scratchL[(size_t)(2*k+1)] * gL;
-                fftR[(size_t)(2*k)] = scratchR[(size_t)(2*k)] * gR; fftR[(size_t)(2*k+1)] = scratchR[(size_t)(2*k+1)] * gR;
+                const float tgt = mag (la) * omt + mag (ra) * t;
+                const float cur = mag (k) + kEps;
+                const float g = (1 - replaceW) + min (1.0f, tgt / cur) * replaceW;
+                fft[2*k] = scratch[2*k] * g; fft[2*k+1] = scratch[2*k+1] * g;
                 handled = true;
             }
             if (!handled && (la >= 1 || ra >= 1))
             {
                 const int ref = la >= 1 ? la : ra;
-                const float tgtL = mag (scratchL, ref);
-                const float tgtR = mag (scratchR, ref);
-                const float curL = mag (scratchL, k) + kEps;
-                const float curR = mag (scratchR, k) + kEps;
-                const float gL = (1 - replaceW) + min (1.0f, tgtL / curL) * replaceW;
-                const float gR = (1 - replaceW) + min (1.0f, tgtR / curR) * replaceW;
-                fftL[(size_t)(2*k)] = scratchL[(size_t)(2*k)] * gL; fftL[(size_t)(2*k+1)] = scratchL[(size_t)(2*k+1)] * gL;
-                fftR[(size_t)(2*k)] = scratchR[(size_t)(2*k)] * gR; fftR[(size_t)(2*k+1)] = scratchR[(size_t)(2*k+1)] * gR;
+                const float tgt = mag (ref);
+                const float cur = mag (k) + kEps;
+                const float g = (1 - replaceW) + min (1.0f, tgt / cur) * replaceW;
+                fft[2*k] = scratch[2*k] * g; fft[2*k+1] = scratch[2*k+1] * g;
                 handled = true;
             }
-            if (!handled) strategyProcess (k, notchCurr[(size_t) k]);
+            if (!handled) strategyProcessCh (fft, k, c.notchCurr[k]);
         }
         else
         {
-            strategyProcess (k, notchCurr[(size_t) k]);
+            strategyProcessCh (fft, k, c.notchCurr[k]);
         }
     }
-    if (replaceW <= 0.05f && notchCurr[(size_t) k] < 0.999f)
-        strategyProcess (k, notchCurr[(size_t) k]);
+    else if (c.notchCurr[k] < 0.999f)
+        strategyProcessCh (fft, k, c.notchCurr[k]);
 }
 
 void FeedbackKillerDSP::dspApplyStrategy()
 {
+    // Linked modes: both channels follow chA's notch (identical to the original
+    // shared behavior). Unlinked: the right channel follows its own state.
+    const bool unlinked = (chanMode == 3);
+    ChanState& cR = unlinked ? chB : chA;
+
     if (mode == 3)
     {
         std::copy (fftL.begin(), fftL.begin() + 2 * nbins, scratchL.begin());
         std::copy (fftR.begin(), fftR.begin() + 2 * nbins, scratchR.begin());
-        int lastCln = -1;
-        for (int k = 1; k < nbins; ++k) { if (notchCurr[(size_t) k] > replaceAnchorClean) lastCln = k; leftAnchor[(size_t) k] = lastCln; }
-        lastCln = -1;
-        for (int k = nbins - 1; k >= 1; --k) { if (notchCurr[(size_t) k] > replaceAnchorClean) lastCln = k; rightAnchor[(size_t) k] = lastCln; }
+
+        auto buildAnchors = [this] (ChanState& c)
+        {
+            int lastCln = -1;
+            for (int k = 1; k < nbins; ++k)
+            { if (c.notchCurr[k] > replaceAnchorClean) lastCln = k; c.lAnchor[k] = lastCln; }
+            lastCln = -1;
+            for (int k = nbins - 1; k >= 1; --k)
+            { if (c.notchCurr[k] > replaceAnchorClean) lastCln = k; c.rAnchor[k] = lastCln; }
+        };
+        buildAnchors (chA);
+        if (unlinked) buildAnchors (chB);
     }
 
     for (int k = 1; k < nbins; ++k)
     {
-        if (mode == 0) strategyProcess (k, notchCurr[(size_t) k]);
-        else if (mode == 2) strategySolo (k, notchCurr[(size_t) k]);
-        else if (mode == 3) strategyReplace (k);
+        if (mode == 0)
+        {
+            strategyProcessCh (fftL.data(), k, chA.notchCurr[k]);
+            strategyProcessCh (fftR.data(), k, cR.notchCurr[k]);
+        }
+        else if (mode == 2)
+        {
+            strategySoloCh (fftL.data(), k, chA.notchCurr[k]);
+            strategySoloCh (fftR.data(), k, cR.notchCurr[k]);
+        }
+        else if (mode == 3)
+        {
+            strategyReplaceCh (fftL.data(), scratchL.data(), chA, k);
+            strategyReplaceCh (fftR.data(), scratchR.data(), cR, k);
+        }
 
         const int mk = fftSize - k;
         fftL[(size_t)(2*mk)] = fftL[(size_t)(2*k)]; fftL[(size_t)(2*mk+1)] = -fftL[(size_t)(2*k+1)];
@@ -467,11 +524,19 @@ void FeedbackKillerDSP::publishTelemetry()
     f.b2min = b2min; f.b2max = b2max;
     f.b3min = b3min; f.b3max = b3max;
 
+    const bool unlinked = (chanMode == 3);
     for (int k = 0; k < nbins; ++k)
     {
-        f.mag[(size_t) k]      = vizMag[(size_t) k];
-        f.floorMag[(size_t) k] = magSmooth[(size_t) k];
-        const float g = notchCurr[(size_t) k];
+        // Unlinked: show the louder channel and the deeper cut so the analyzer
+        // reflects everything the plugin is doing across both channels.
+        const float m = unlinked ? max (vizMag[(size_t) k], vizMagR[(size_t) k])
+                                 : vizMag[(size_t) k];
+        const float fl = unlinked ? max (magSmooth[(size_t) k], magSmoothR[(size_t) k])
+                                  : magSmooth[(size_t) k];
+        const float g = unlinked ? min (notchCurr[(size_t) k], notchCurrR[(size_t) k])
+                                 : notchCurr[(size_t) k];
+        f.mag[(size_t) k]      = m;
+        f.floorMag[(size_t) k] = fl;
         f.gainDb[(size_t) k]   = (g >= 0.999f) ? 0.0f
                                : 20.0f * std::log (max (g, kEps)) * log10inv;
         f.msc[(size_t) k]      = vizMsc[(size_t) k];
@@ -483,9 +548,18 @@ void FeedbackKillerDSP::runHop()
 {
     dspLoadAndFFT();
     dspAnalyzeSpectrum();
-    dspCalculateFloor();
-    dspCalculateTargets();
-    dspApplyDilationAndSmoothing();
+
+    dspCalculateFloor (chA);
+    dspCalculateTargets (chA, /*writeViz*/ true);
+    dspApplyDilationAndSmoothing (chA);
+
+    if (chanMode == 3)   // Unlinked: run the full detection pipeline for R too
+    {
+        dspCalculateFloor (chB);
+        dspCalculateTargets (chB, /*writeViz*/ false);
+        dspApplyDilationAndSmoothing (chB);
+    }
+
     dspApplyStrategy();   // mode 1 (Bypass) applies no cut but still mirrors -> passthrough
     dspIfftAndOla();
     firstFFTDone = true;

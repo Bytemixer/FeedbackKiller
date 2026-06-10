@@ -73,7 +73,8 @@ FeedbackKillerProcessor::createParameterLayout()
 
     // --- Engine ---
     pc ("channelMode", "Channel Mode",
-        { "Auto-Detect", "Forced Stereo", "Forced Mono (Bus/Panned)" }, 0);
+        { "Auto-Detect", "Forced Stereo", "Forced Mono (Bus/Panned)",
+          "Unlinked Dual-Mono" }, 0);
     pc ("fftSize", "FFT Size", { "4096", "8192", "16384", "32768" }, 1);
 
     return layout;
