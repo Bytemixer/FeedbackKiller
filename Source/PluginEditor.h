@@ -1,3 +1,14 @@
+/*  This file is part of the Feedback Resonance Killer audio plugin.
+    Copyright (C) 2026 Bytemixer
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+    This program is free software: you can redistribute it and/or modify it
+    under the terms of the GNU Affero General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or (at
+    your option) any later version. It is distributed WITHOUT ANY WARRANTY;
+    see the LICENSE file for details.
+*/
+
 #pragma once
 
 #include "PluginProcessor.h"
@@ -28,6 +39,22 @@ private:
 
     juce::Viewport  viewport;
     juce::Component content;
+
+    // ---- footer + About overlay (AGPL "Appropriate Legal Notices") ----
+    class AboutOverlay : public juce::Component
+    {
+    public:
+        AboutOverlay();
+        void paint (juce::Graphics&) override;
+        void resized() override;
+        void mouseDown (const juce::MouseEvent&) override { setVisible (false); }
+    private:
+        juce::HyperlinkButton repoLink;
+    };
+
+    juce::Label      titleLabel;
+    juce::TextButton aboutButton { "About" };
+    AboutOverlay     aboutOverlay;
 
     juce::OwnedArray<juce::Label>                 labels;
     juce::OwnedArray<juce::Slider>                sliders;

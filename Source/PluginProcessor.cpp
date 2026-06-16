@@ -1,3 +1,14 @@
+/*  This file is part of the Feedback Resonance Killer audio plugin.
+    Copyright (C) 2026 Bytemixer
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+    This program is free software: you can redistribute it and/or modify it
+    under the terms of the GNU Affero General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or (at
+    your option) any later version. It is distributed WITHOUT ANY WARRANTY;
+    see the LICENSE file for details.
+*/
+
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
@@ -68,9 +79,13 @@ FeedbackKillerProcessor::createParameterLayout()
     // --- Spectral Replace ---
     pf ("replaceAnchorClean", "Replace Anchor Clean", { 0.50f, 0.99f, 0.01f }, 0.85f);
 
+    // --- Enhancement: phase-stability tonal gate (0 = off => faithful JSFX) ---
+    pf ("tonalGate", "Tonal Gate (Phase)", { 0.0f, 1.0f, 0.01f }, 0.0f);
+
     // --- Engine ---
     pc ("channelMode", "Channel Mode",
-        { "Auto-Detect", "Forced Stereo", "Forced Mono (Bus/Panned)" }, 0);
+        { "Auto-Detect", "Forced Stereo", "Forced Mono (Bus/Panned)",
+          "Unlinked Dual-Mono" }, 0);
     pc ("fftSize", "FFT Size", { "4096", "8192", "16384", "32768" }, 1);
 
     return layout;
@@ -105,6 +120,7 @@ FeedbackKillerDSP::Params FeedbackKillerProcessor::readParams() const
     p.releaseMs       = get ("release");
     p.holdMs          = get ("hold");
     p.replaceAnchorClean = get ("replaceAnchorClean");
+    p.tonalGate       = get ("tonalGate");
     p.channelMode     = (int) get ("channelMode");
     p.fftOrder        = 12 + (int) get ("fftSize");   // choice index 0..3 -> order 12..15
     return p;
@@ -136,6 +152,7 @@ void FeedbackKillerProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     SafetyGuard::makeFinite (buffer);   // keep bad input from poisoning recursive state
 
     dsp.setParams (readParams());
+    dsp.setRealtime (! isNonRealtime());   // offline render runs the hop engine inline
     dsp.process (buffer.getArrayOfWritePointers(), buffer.getNumChannels(), buffer.getNumSamples());
 
     safety.sanitize (buffer);           // protect-your-ears: no NaN/Inf or blow-up ever leaves
