@@ -1,5 +1,12 @@
 # Feedback Resonance Killer
 
+NOTE/caveat: 
+While I designed and architected the ideas and concepts for the signal flow and how the tool needed to behave:  the actual math, calculations, and code were handled by LLM. 
+I'm a musician and recording/mixing/audio engineer. And while I retain some knowledge and foundations of code, (My A.A. was in computer/information science) I'm not technically a coder, but more of a designer/conceptor/planner.
+
+The VST3 version of this tool was checked through Tracktion's PluginVal under R10 stress testing to make sure it didn't crash or exhibit weird issues, and to ensure this plugin should work in most DAWs.
+Still this is provided as is with no warranty. Though if/when I find problems or decided to add a feature, the source and binaries will be updated.
+
 A surgical FFT-based feedback and resonance suppressor (VST3 / Standalone,
 Windows). Born from cleaning up live concert recordings where ordinary
 dynamic-resonance tools couldn't tame true feedback rings.
