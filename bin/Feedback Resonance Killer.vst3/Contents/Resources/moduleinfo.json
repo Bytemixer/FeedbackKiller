@@ -1,0 +1,46 @@
+{
+  "Name": "Feedback Resonance Killer",
+  "Version": "0.4.1",
+  "Factory Info": {
+    "Vendor": "Bytemixer",
+    "URL": "",
+    "E-Mail": "",
+    "Flags": {
+      "Unicode": true,
+      "Classes Discardable": false,
+      "Component Non Discardable": false,
+    },
+  },
+  "Classes": [
+    {
+      "CID": "ABCDEF019182FAEB42746D7846626B31",
+      "Category": "Audio Module Class",
+      "Name": "Feedback Resonance Killer",
+      "Vendor": "Bytemixer",
+      "Version": "0.4.1",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": [
+        "Fx",
+      ],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+    {
+      "CID": "ABCDEF011234ABCD42746D7846626B31",
+      "Category": "Component Controller Class",
+      "Name": "Feedback Resonance Killer",
+      "Vendor": "Bytemixer",
+      "Version": "0.4.1",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": [
+        "Fx",
+      ],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+  ],
+}
