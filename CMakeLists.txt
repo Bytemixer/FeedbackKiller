@@ -23,8 +23,10 @@ else()
 endif()
 
 juce_add_plugin(FeedbackKiller
+    VERSION                   ${PROJECT_VERSION}   # propagate project version to the plugin
     COMPANY_NAME              "Bytemixer"
     PRODUCT_NAME              "Feedback Resonance Killer"
+    PRODUCT_BUNDLE_IDENTIFIER com.Bytemixer.FeedbackKiller
     PLUGIN_MANUFACTURER_CODE  Btmx
     PLUGIN_CODE               Fbk1
     FORMATS                   VST3 Standalone
