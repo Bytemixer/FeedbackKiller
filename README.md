@@ -8,8 +8,9 @@ The VST3 version of this tool was checked through Tracktion's PluginVal under R1
 Still this is provided as is with no warranty. Though if/when I find problems or decide to add a feature, the source and binaries will be updated.
 
 A surgical FFT-based feedback and resonance suppressor (VST3 / Standalone,
-Windows). Born from cleaning up live concert recordings where ordinary
-dynamic tools couldn't tame broadband feedback problems (and I didn't own RX at the time).
+Windows). Born from cleaning up a live concert recording where ordinary
+dynamic tools couldn't tame a segment with broadback feedback problems 
+(and I didn't own RX at the time).
 
 In a nutshell, it hunts bins that rise above a **robust spectral floor** inside up to three
 user-defined frequency bands, then surgically attenuates them with narrow dynamic notches
