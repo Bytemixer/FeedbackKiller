@@ -9,27 +9,27 @@ Still this is provided as is with no warranty. Though if/when I find problems or
 
 A surgical FFT-based feedback and resonance suppressor (VST3 / Standalone,
 Windows). Born from cleaning up live concert recordings where ordinary
-dynamic-resonance tools couldn't tame true feedback rings.
+dynamic tools couldn't tame broadband feedback problems (and I didn't own RX at the time).
 
-It hunts bins that rise above a **robust spectral floor** inside up to three
-user-defined frequency bands, then carves them out with narrow dynamic notches
-— while a live analyzer shows the spectrum, the detection floor, and every cut
+In a nutshell, it hunts bins that rise above a **robust spectral floor** inside up to three
+user-defined frequency bands, then surgically attenuates them with narrow dynamic notches
+while a live analyzer shows the spectrum, the detection floor, and every cut
 as it happens.
 
 ## Highlights
 
-- **Robust floor detection** — peak-rejecting noise-floor estimate per bin, so
+- **Robust floor detection** -- peak-rejecting noise-floor estimate per bin, so
   the music's own level doesn't hide the ring.
-- **Stereo coherence (MSC) discrimination** — feedback fills the room the same
+- **Stereo coherence (MSC) discrimination** -- feedback fills the room the same
   way in both channels; uncorrelated music is spared.
 - **Three independent frequency bands** with draggable on-graph editing.
-- **Four reduction modes** — Process (notch), Bypass, Solo (hear what's being
+- **Four reduction modes** -- Process (notch), Bypass, Solo (hear what's being
   removed), Spectral Replace (rebuild the notch from clean neighbours).
-- **Four channel modes** — Auto-Detect, Forced Stereo, Forced Mono, and
+- **Four channel modes** -- Auto-Detect, Forced Stereo, Forced Mono, and
   Unlinked Dual-Mono (independent per-channel detection and cutting).
-- **Optional phase-stability Tonal Gate** — spare phase-chaotic content while
+- **Optional phase-stability Tonal Gate** -- spare phase-chaotic content while
   still cutting steady tonal rings.
-- **FFT 4096–32768** — scalpel for dense feedback clusters at 32k, or a smooth
+- **FFT 4096–32768** -- scalpel for dense feedback clusters at 32k, or a smooth
   dynamic-EQ "bus leveler" at smaller sizes with wider notches.
 - Real-time carved-spectrum analyzer; editable value fields on every control.
 - Reports its latency to the host (full PDC support).
@@ -70,15 +70,3 @@ implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 Built with the [JUCE framework](https://juce.com) under AGPLv3. See
 [NOTICE.md](NOTICE.md) for third-party notices. VST is a trademark of
 Steinberg Media Technologies GmbH.
-
-## Getting the plugin
-
-This is **open-source, commercially distributed** software ("free" in the AGPL
-sense refers to the license freedoms, not the price):
-
-- **Prebuilt binaries** are sold pay-what-you-want (with a minimum) — you are
-  paying for the ready-to-use build and for supporting development:
-  - itch.io: *(link TBD)*
-  - Ko-fi (tips / support): *(link TBD)*
-- **Source code** is right here under the AGPL — you are always welcome to
-  build it yourself for free using the instructions above.
