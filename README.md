@@ -14,10 +14,9 @@ Windows). Born from cleaning up a live concert recording where ordinary
 dynamic tools couldn't tame a segment with broadback feedback problems 
 (and I didn't own RX at the time).
 
-In a nutshell, it hunts bins that rise above a **robust spectral floor** inside up to three
-user-defined frequency bands, then surgically attenuates them with narrow dynamic notches
-while a live analyzer shows the spectrum, the detection floor, and every cut
-as it happens.
+In a nutshell, it hunts bins that rise above a **robust noise floor** inside up to three
+user-defined frequency bands, then surgically attenuates them with very thin dynamic notches
+while a live analyzer shows the spectrum, the detection floor, and the attenuation as it happens.
 
 ## Highlights
 
