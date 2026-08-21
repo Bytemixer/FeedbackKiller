@@ -23,15 +23,15 @@ as it happens.
 
 - **Robust floor detection** -- peak-rejecting noise-floor estimate per bin, so
   the music's own level doesn't hide the ring.
-- **Stereo coherence (MSC) discrimination** -- feedback fills the room the same
-  way in both channels; uncorrelated music is spared.
-- **Three independent frequency bands** with draggable on-graph editing.
-- **Four reduction modes** -- Process (notch), Bypass, Solo (hear what's being
-  removed), Spectral Replace (rebuild the notch from clean neighbours).
+- **Stereo coherence (MSC) discrimination** -- feedback resonance fills the room across
+  both channels from stereo recording; uncorrelated music is spared.
+- **Three independent frequency bands** with draggable on-graph positioning.
+- **Four reduction modes** -- Process (notch attenuation), Bypass, Solo (hear what's being
+  removed), Spectral Replace (rebuild the notch from clean neighboring bins).
 - **Four channel modes** -- Auto-Detect, Forced Stereo, Forced Mono, and
   Unlinked Dual-Mono (independent per-channel detection and cutting).
 - **Optional phase-stability Tonal Gate** -- spare phase-chaotic content while
-  still cutting steady tonal rings.
+  still cutting steady tonal rings. May help in some scenarios.
 - **FFT 4096–32768** -- scalpel for dense feedback clusters at 32k, or a smooth
   dynamic-EQ "bus leveler" at smaller sizes with wider notches.
 - Real-time carved-spectrum analyzer; editable value fields on every control.
